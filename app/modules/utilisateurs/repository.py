@@ -19,18 +19,29 @@ def get_user_by_phone(db: Session, phone: str) -> User | None:
     return db.scalar(statement)
 
 
+def get_users_by_role(db: Session, role: str) -> list[User]:
+    statement = (
+        select(User)
+        .where(User.role == role)
+        .order_by(User.created_at.desc())
+    )
+    return list(db.scalars(statement).all())
+
+
 def create_user(
     db: Session,
     full_name: str,
     phone: str,
     email: str,
     password_hash: str,
+    role: str = "user",
 ) -> User:
     user = User(
         full_name=full_name,
         phone=phone,
         email=email,
         password_hash=password_hash,
+        role=role,
     )
 
     db.add(user)

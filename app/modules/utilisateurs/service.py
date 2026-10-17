@@ -11,7 +11,21 @@ def register_user(
     db: Session,
     user_data: UtilisateurCreate,
 ) -> User:
-    # Check whether the email already exists
+    return create_user_account(
+        db=db,
+        user_data=user_data,
+        role="user",
+    )
+
+
+def create_user_account(
+    db: Session,
+    user_data: UtilisateurCreate,
+    role: str,
+) -> User:
+    if role not in ("user", "admin"):
+        raise ValueError("Rôle invalide")
+
     existing_email = repository.get_user_by_email(
         db,
         str(user_data.email),
@@ -19,7 +33,6 @@ def register_user(
     if existing_email:
         raise ValueError("Email already registered")
 
-    # Check whether the phone number already exists
     existing_phone = repository.get_user_by_phone(
         db,
         user_data.phone,
@@ -27,19 +40,20 @@ def register_user(
     if existing_phone:
         raise ValueError("Phone number already registered")
 
-    # Hash the password before saving it
     hashed_password = hacher_mot_de_passe(user_data.password)
 
-    # Create the user in the database
     return repository.create_user(
         db=db,
         full_name=user_data.full_name,
         phone=user_data.phone,
         email=str(user_data.email),
         password_hash=hashed_password,
+        role=role,
     )
 
 
+def list_clients(db: Session) -> list[User]:
+    return repository.get_users_by_role(db, "user")
 
 
 def login_user(

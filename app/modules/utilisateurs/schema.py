@@ -29,3 +29,10 @@ class UtilisateurResponse(BaseModel):
 class UserLogin(BaseModel):
     phone: str = Field(min_length=5, max_length=30)
     password: str = Field(min_length=8, max_length=128)
+
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UtilisateurResponse
