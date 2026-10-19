@@ -73,3 +73,7 @@ def login_user(
         raise ValueError("User account is inactive")
 
     return user
+
+
+def list_all_users(db: Session) -> list[User]:
+    return repository.get_all_users(db)

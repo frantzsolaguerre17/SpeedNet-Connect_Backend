@@ -123,3 +123,11 @@ def admin_test(
         "message": "Accès administrateur autorisé",
         "role": admin.role,
     }
+
+
+@router.get("/admin/users", response_model=list[UtilisateurResponse])
+def admin_list_users(
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    return service.list_all_users(db)
