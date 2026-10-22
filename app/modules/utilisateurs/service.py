@@ -5,6 +5,7 @@ from app.core.security import hacher_mot_de_passe, verifier_mot_de_passe
 from app.modules.utilisateurs import repository
 from app.modules.utilisateurs.model import User
 from app.modules.utilisateurs.schema import UtilisateurCreate
+from app.modules.wallets.model import Wallet
 
 
 def register_user(
@@ -42,14 +43,30 @@ def create_user_account(
 
     hashed_password = hacher_mot_de_passe(user_data.password)
 
-    return repository.create_user(
-        db=db,
-        full_name=user_data.full_name,
-        phone=user_data.phone,
-        email=str(user_data.email),
-        password_hash=hashed_password,
-        role=role,
-    )
+    try:
+        user = repository.create_user(
+            db=db,
+            full_name=user_data.full_name,
+            phone=user_data.phone,
+            email=str(user_data.email),
+            password_hash=hashed_password,
+            role=role,
+        )
+
+        wallet = Wallet(
+            user_id=user.id,
+            balance=0,
+            currency="HTG",
+        )
+        db.add(wallet)
+        db.commit()
+        db.refresh(user)
+
+        return user
+
+    except Exception:
+        db.rollback()
+        raise
 
 
 def list_clients(db: Session) -> list[User]:
