@@ -27,6 +27,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.modules.wallets.model import Wallet
+from app.modules.wallets.transaction_model import WalletTransaction
+from app.modules.wallets.transaction_model import WalletTransaction
+from app.modules.plans_wifi.order_model import Order
+from app.modules.plans_wifi.model import Plan
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -158,6 +165,7 @@ def admin_list_users(
     return service.list_all_users(db)
 
 
+
 @router.post(
     "/admin/users/{user_id}/recharge",
     response_model=RechargeResponse,
@@ -182,6 +190,16 @@ def admin_recharge_wallet(
 
     try:
         wallet.balance = wallet.balance + data.amount
+
+        transaction = WalletTransaction(
+            wallet_id=wallet.id,
+            type="DEPOT",
+            amount=data.amount,
+            balance_after=wallet.balance,
+            description="Recharge effectuée par un administrateur",
+        )
+
+        db.add(transaction)
         db.commit()
         db.refresh(wallet)
 
@@ -192,12 +210,15 @@ def admin_recharge_wallet(
             "currency": wallet.currency,
         }
 
-    except Exception:
+    except Exception as exc:
         db.rollback()
+        logger.exception("Erreur pendant la recharge du portefeuille")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Erreur lors de la recharge",
-        )
+            detail=f"Erreur lors de la recharge : {str(exc)}",
+        ) from exc
+
+
 
 
 @router.get("/me/wallet", response_model=MonPortefeuilleResponse)
@@ -219,3 +240,69 @@ def obtenir_mon_portefeuille(
         "balance": wallet.balance,
         "currency": wallet.currency,
     }
+
+
+
+@router.get("/me/transactions")
+def obtenir_mes_transactions(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    wallet = db.scalar(
+        select(Wallet).where(Wallet.user_id == current_user.id)
+    )
+
+    if wallet is None:
+        return []
+
+    transactions = []
+
+    # Recharges enregistrées dans le portefeuille
+    recharges = (
+        db.query(WalletTransaction)
+        .filter(
+            WalletTransaction.wallet_id == wallet.id,
+            WalletTransaction.type == "DEPOT",
+        )
+        .all()
+    )
+
+    for recharge in recharges:
+        transactions.append({
+            "id": f"recharge-{recharge.id}",
+            "type": "recharge",
+            "description": recharge.description or "Recharge administrative",
+            "amount": str(recharge.amount),
+            "currency": wallet.currency,
+            "date": recharge.created_at.isoformat(),
+            "balance_after": str(recharge.balance_after),
+        })
+
+    # Achats de codes Wi-Fi
+    achats = (
+        db.query(Order, Plan)
+        .join(Plan, Order.plan_id == Plan.id)
+        .filter(
+            Order.user_id == current_user.id,
+            Order.status == "completed",
+        )
+        .all()
+    )
+
+    for commande, plan in achats:
+        transactions.append({
+            "id": f"achat-{commande.id}",
+            "type": "achat_wifi",
+            "description": f"Achat forfait Wi-Fi : {plan.name}",
+            "amount": str(commande.amount),
+            "currency": commande.currency,
+            "date": commande.created_at.isoformat(),
+            "balance_after": None,
+        })
+
+    transactions.sort(
+        key=lambda transaction: transaction["date"],
+        reverse=True,
+    )
+
+    return transactions
