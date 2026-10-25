@@ -28,18 +28,17 @@ def get_users_by_role(db: Session, role: str) -> list[User]:
     return list(db.scalars(statement).all())
 
 
+
 def create_user(
     db: Session,
     full_name: str,
     phone: str,
-    email: str,
     password_hash: str,
     role: str = "user",
 ) -> User:
     user = User(
         full_name=full_name,
         phone=phone,
-        email=email,
         password_hash=password_hash,
         role=role,
     )
@@ -49,6 +48,7 @@ def create_user(
     db.refresh(user)
 
     return user
+
 
 
 

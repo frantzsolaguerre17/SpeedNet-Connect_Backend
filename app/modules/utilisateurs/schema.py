@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 class UtilisateurCreate(BaseModel):
     full_name: str = Field(min_length=2, max_length=150)
     phone: str = Field(min_length=5, max_length=30)
-    email: EmailStr
     password: str = Field(min_length=8, max_length=128)
 
 
@@ -16,7 +15,6 @@ class UtilisateurResponse(BaseModel):
     id: int
     full_name: str
     phone: str
-    email: EmailStr
     role: str
     status: str
     created_at: datetime

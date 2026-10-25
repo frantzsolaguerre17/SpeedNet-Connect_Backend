@@ -32,6 +32,12 @@ from app.modules.wallets.transaction_model import WalletTransaction
 from app.modules.plans_wifi.order_model import Order
 from app.modules.plans_wifi.model import Plan
 import logging
+from datetime import datetime, timedelta
+
+from sqlalchemy import func, select
+
+from app.modules.plans_wifi.model import Plan, WifiCode
+
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +169,57 @@ def admin_list_users(
     db: Annotated[Session, Depends(get_db)],
 ):
     return service.list_all_users(db)
+
+
+
+@router.get("/admin/stats")
+def admin_stats(
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    # 1. Nombre total de comptes clients (sans les administrateurs)
+    clients_inscrits = db.scalar(
+        select(func.count(User.id)).where(
+            func.lower(User.role) == "user"
+        )
+    ) or 0
+
+    # 2. Total des ventes confirmées aujourd'hui, en HTG
+    maintenant = datetime.now().astimezone()
+    debut_jour = maintenant.replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    debut_demain = debut_jour + timedelta(days=1)
+
+    ventes_du_jour = db.scalar(
+        select(func.coalesce(func.sum(Order.amount), 0)).where(
+            func.lower(Order.status) == "completed",
+            func.upper(Order.currency) == "HTG",
+            Order.created_at >= debut_jour,
+            Order.created_at < debut_demain,
+        )
+    ) or Decimal("0.00")
+
+    # 3. Nombre de codes Wi-Fi disponibles
+    codes_disponibles = db.scalar(
+        select(func.count(WifiCode.id)).where(
+            func.lower(WifiCode.status) == "available"
+        )
+    ) or 0
+
+    # 4. Nombre de forfaits actifs
+    plans_disponibles = db.scalar(
+        select(func.count(Plan.id)).where(
+            func.lower(Plan.status) == "active"
+        )
+    ) or 0
+
+    return {
+        "clients_inscrits": clients_inscrits,
+        "ventes_du_jour": str(ventes_du_jour),
+        "codes_disponibles": codes_disponibles,
+        "plans_disponibles": plans_disponibles,
+    }
 
 
 
