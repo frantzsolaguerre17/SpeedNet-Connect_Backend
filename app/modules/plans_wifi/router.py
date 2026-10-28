@@ -265,6 +265,7 @@ def buy_wifi_code(
 
 
 
+
 @router.get("/my-codes")
 def mes_codes_achetes(
     db: DbSession,
@@ -289,7 +290,12 @@ def mes_codes_achetes(
             "code": code.code,
             "amount": str(commande.amount),
             "currency": commande.currency,
-            "purchased_at": commande.created_at,
+            "purchased_at": (
+                commande.created_at.isoformat()
+                if commande.created_at
+                else None
+            ),
         }
         for commande, plan, code in commandes
     ]
+

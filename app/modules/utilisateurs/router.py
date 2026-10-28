@@ -667,3 +667,149 @@ def transferer_argent(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Une erreur est survenue pendant le transfert.",
         ) from exc
+
+
+
+
+@router.get("/admin/transactions")
+def admin_lister_toutes_transactions(
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[Session, Depends(get_db)],
+    q: str = "",
+):
+    transactions = []
+    recherche = q.strip().lower()
+
+    # Tous les clients, pour retrouver le correspondant d'un transfert.
+    utilisateurs = db.scalars(select(User)).all()
+    utilisateurs_par_telephone = {
+        str(u.phone).strip(): u
+        for u in utilisateurs
+        if u.phone
+    }
+
+    # 1. Toutes les recharges et opérations de portefeuille.
+    operations_wallet = (
+        db.query(WalletTransaction, Wallet, User)
+        .join(Wallet, WalletTransaction.wallet_id == Wallet.id)
+        .join(User, Wallet.user_id == User.id)
+        .order_by(WalletTransaction.created_at.desc())
+        .all()
+    )
+
+    for operation, wallet, client in operations_wallet:
+        type_operation = operation.type.upper()
+
+        if type_operation == "DEPOT":
+            type_transaction = "recharge"
+        elif type_operation in ("TRANSFER_OUT", "TRANSFER_IN"):
+            type_transaction = "transfert"
+        else:
+            type_transaction = type_operation.lower()
+
+        description = operation.description or "Opération de portefeuille"
+
+        # Identifier le numéro du correspondant à partir de la description.
+        telephone_autre = None
+        nom_autre = None
+
+        if type_operation in ("TRANSFER_OUT", "TRANSFER_IN"):
+            marqueur = "numéro "
+            position = description.lower().rfind(marqueur)
+
+            if position >= 0:
+                telephone_autre = description[
+                    position + len(marqueur):
+                ].strip()
+
+                autre = utilisateurs_par_telephone.get(telephone_autre)
+                if autre:
+                    nom_autre = autre.full_name
+
+        if type_operation == "TRANSFER_OUT":
+            expediteur_nom = client.full_name
+            expediteur_telephone = client.phone
+            destinataire_nom = nom_autre
+            destinataire_telephone = telephone_autre
+        elif type_operation == "TRANSFER_IN":
+            expediteur_nom = nom_autre
+            expediteur_telephone = telephone_autre
+            destinataire_nom = client.full_name
+            destinataire_telephone = client.phone
+        else:
+            expediteur_nom = None
+            expediteur_telephone = None
+            destinataire_nom = None
+            destinataire_telephone = None
+
+        # La recherche porte sur le client et le correspondant.
+        texte_recherche = " ".join(str(v or "") for v in [
+            client.full_name,
+            client.phone,
+            nom_autre,
+            telephone_autre,
+            description,
+        ]).lower()
+
+        if recherche and recherche not in texte_recherche:
+            continue
+
+        transactions.append({
+            "id": f"wallet-{operation.id}",
+            "type": type_transaction,
+            "description": description,
+            "amount": str(operation.amount),
+            "currency": wallet.currency,
+            "date": operation.created_at.isoformat(),
+            "balance_after": str(operation.balance_after),
+            "user_name": client.full_name,
+            "user_phone": client.phone,
+            "sender_name": expediteur_nom,
+            "sender_phone": expediteur_telephone,
+            "recipient_name": destinataire_nom,
+            "recipient_phone": destinataire_telephone,
+        })
+
+    # 2. Tous les achats Wi-Fi confirmés.
+    achats_wifi = (
+        db.query(Order, Plan, User)
+        .join(Plan, Order.plan_id == Plan.id)
+        .join(User, Order.user_id == User.id)
+        .filter(func.lower(Order.status) == "completed")
+        .order_by(Order.created_at.desc())
+        .all()
+    )
+
+    for commande, plan, client in achats_wifi:
+        texte_recherche = (
+            f"{client.full_name or ''} "
+            f"{client.phone or ''} "
+            f"{plan.name or ''} achat wifi"
+        ).lower()
+
+        if recherche and recherche not in texte_recherche:
+            continue
+
+        transactions.append({
+            "id": f"achat-{commande.id}",
+            "type": "achat_wifi",
+            "description": f"Achat forfait Wi-Fi : {plan.name}",
+            "amount": str(commande.amount),
+            "currency": commande.currency,
+            "date": commande.created_at.isoformat(),
+            "balance_after": None,
+            "user_name": client.full_name,
+            "user_phone": client.phone,
+            "sender_name": None,
+            "sender_phone": None,
+            "recipient_name": None,
+            "recipient_phone": None,
+        })
+
+    # 3. Trier l'historique complet du plus récent au plus ancien.
+    transactions.sort(
+        key=lambda transaction: transaction["date"],
+        reverse=True,
+    )
+
+    return transactions
