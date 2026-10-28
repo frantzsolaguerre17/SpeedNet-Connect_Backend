@@ -66,6 +66,27 @@ class MonPortefeuilleResponse(BaseModel):
     balance: Decimal
     currency: str
 
+class AdminUtilisateurPortefeuilleResponse(UtilisateurResponse):
+    balance: Decimal = Decimal("0.00")
+    currency: str = "HTG"
+
+
+class TransferRequest(BaseModel):
+    phone: str = Field(min_length=1, max_length=30)
+    amount: Decimal = Field(
+        gt=0,
+        max_digits=12,
+        decimal_places=2,
+    )
+
+
+class TransferResponse(BaseModel):
+    message: str
+    recipient_phone: str
+    amount: Decimal
+    balance: Decimal
+    currency: str
+
 
 @router.post(
     "/register",
@@ -163,13 +184,48 @@ def admin_test(
     }
 
 
-@router.get("/admin/users", response_model=list[UtilisateurResponse])
+@router.get(
+    "/admin/users",
+    response_model=list[AdminUtilisateurPortefeuilleResponse],
+)
 def admin_list_users(
     admin: Annotated[User, Depends(require_admin)],
     db: Annotated[Session, Depends(get_db)],
 ):
-    return service.list_all_users(db)
+    utilisateurs = db.scalars(select(User)).all()
 
+    portefeuilles = db.scalars(select(Wallet)).all()
+
+    portefeuilles_par_user = {
+        portefeuille.user_id: portefeuille
+        for portefeuille in portefeuilles
+    }
+
+    resultat = []
+
+    for utilisateur in utilisateurs:
+        portefeuille = portefeuilles_par_user.get(utilisateur.id)
+
+        donnees = UtilisateurResponse.model_validate(
+            utilisateur,
+            from_attributes=True,
+        ).model_dump()
+
+        donnees["balance"] = (
+            portefeuille.balance
+            if portefeuille is not None
+            else Decimal("0.00")
+        )
+
+        donnees["currency"] = (
+            portefeuille.currency
+            if portefeuille is not None
+            else "HTG"
+        )
+
+        resultat.append(donnees)
+
+    return resultat
 
 
 @router.get("/admin/stats")
@@ -220,6 +276,79 @@ def admin_stats(
         "codes_disponibles": codes_disponibles,
         "plans_disponibles": plans_disponibles,
     }
+
+
+    
+@router.get("/admin/transactions/recentes")
+def admin_transactions_recentes(
+    admin: Annotated[User, Depends(require_admin)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    transactions = []
+
+    # 1. Recharges et transferts des portefeuilles
+    operations_wallet = (
+        db.query(WalletTransaction, Wallet, User)
+        .join(Wallet, WalletTransaction.wallet_id == Wallet.id)
+        .join(User, Wallet.user_id == User.id)
+        .order_by(WalletTransaction.created_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    for operation, wallet, client in operations_wallet:
+        type_transaction = {
+            "DEPOT": "recharge",
+            "TRANSFER_OUT": "transfer_out",
+            "TRANSFER_IN": "transfer_in",
+        }.get(operation.type, operation.type.lower())
+
+        transactions.append({
+            "id": f"wallet-{operation.id}",
+            "type": type_transaction,
+            "description": (
+                operation.description or "Opération de portefeuille"
+            ),
+            "amount": str(operation.amount),
+            "currency": wallet.currency,
+            "date": operation.created_at.isoformat(),
+            "balance_after": str(operation.balance_after),
+            "user_name": client.full_name,
+            "user_phone": client.phone,
+        })
+
+    # 2. Achats de forfaits Wi-Fi confirmés
+    achats_wifi = (
+        db.query(Order, Plan, User)
+        .join(Plan, Order.plan_id == Plan.id)
+        .join(User, Order.user_id == User.id)
+        .filter(func.lower(Order.status) == "completed")
+        .order_by(Order.created_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    for commande, plan, client in achats_wifi:
+        transactions.append({
+            "id": f"achat-{commande.id}",
+            "type": "achat_wifi",
+            "description": f"Achat forfait Wi-Fi : {plan.name}",
+            "amount": str(commande.amount),
+            "currency": commande.currency,
+            "date": commande.created_at.isoformat(),
+            "balance_after": None,
+            "user_name": client.full_name,
+            "user_phone": client.phone,
+        })
+
+    # 3. Trier toutes les opérations et garder les 10 plus récentes
+    transactions.sort(
+        key=lambda transaction: transaction["date"],
+        reverse=True,
+    )
+
+    return transactions[:10]
+
 
 
 
@@ -300,6 +429,7 @@ def obtenir_mon_portefeuille(
 
 
 
+
 @router.get("/me/transactions")
 def obtenir_mes_transactions(
     current_user: Annotated[User, Depends(get_current_user)],
@@ -314,7 +444,7 @@ def obtenir_mes_transactions(
 
     transactions = []
 
-    # Recharges enregistrées dans le portefeuille
+    # 1. Recharges enregistrées dans le portefeuille
     recharges = (
         db.query(WalletTransaction)
         .filter(
@@ -328,14 +458,16 @@ def obtenir_mes_transactions(
         transactions.append({
             "id": f"recharge-{recharge.id}",
             "type": "recharge",
-            "description": recharge.description or "Recharge administrative",
+            "description": (
+                recharge.description or "Recharge administrative"
+            ),
             "amount": str(recharge.amount),
             "currency": wallet.currency,
             "date": recharge.created_at.isoformat(),
             "balance_after": str(recharge.balance_after),
         })
 
-    # Achats de codes Wi-Fi
+    # 2. Achats de codes Wi-Fi
     achats = (
         db.query(Order, Plan)
         .join(Plan, Order.plan_id == Plan.id)
@@ -357,9 +489,181 @@ def obtenir_mes_transactions(
             "balance_after": None,
         })
 
+    # 3. Transferts envoyés et reçus
+    transferts = (
+        db.query(WalletTransaction)
+        .filter(
+            WalletTransaction.wallet_id == wallet.id,
+            WalletTransaction.type.in_([
+                "TRANSFER_OUT",
+                "TRANSFER_IN",
+            ]),
+        )
+        .all()
+    )
+
+    for transfert in transferts:
+        est_envoi = transfert.type == "TRANSFER_OUT"
+
+        transactions.append({
+            "id": f"transfert-{transfert.id}",
+            "type": (
+                "transfer_out" if est_envoi else "transfer_in"
+            ),
+            "description": (
+                transfert.description
+                or (
+                    "Transfert envoyé"
+                    if est_envoi
+                    else "Transfert reçu"
+                )
+            ),
+            "amount": str(transfert.amount),
+            "currency": wallet.currency,
+            "date": transfert.created_at.isoformat(),
+            "balance_after": str(transfert.balance_after),
+        })
+
+    # 4. Trier du plus récent au plus ancien
     transactions.sort(
         key=lambda transaction: transaction["date"],
         reverse=True,
     )
 
     return transactions
+
+
+
+
+    
+@router.post(
+    "/me/transfer",
+    response_model=TransferResponse,
+    status_code=status.HTTP_200_OK,
+)
+def transferer_argent(
+    data: TransferRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+):
+    recipient_phone = data.phone.strip()
+
+    if not recipient_phone:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Le numéro du destinataire est obligatoire.",
+        )
+
+    if data.amount <= Decimal("0.00"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Le montant doit être supérieur à zéro.",
+        )
+
+    try:
+        # 1. Retrouver le destinataire par son numéro
+        recipient = db.scalar(
+            select(User).where(User.phone == recipient_phone)
+        )
+
+        if recipient is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Aucun utilisateur trouvé avec ce numéro.",
+            )
+
+        if recipient.id == current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tu ne peux pas transférer de l'argent à toi-même.",
+            )
+
+        # 2. Verrouiller les deux portefeuilles dans le même ordre
+        user_ids = sorted([current_user.id, recipient.id])
+
+        wallets = db.scalars(
+            select(Wallet)
+            .where(Wallet.user_id.in_(user_ids))
+            .order_by(Wallet.id)
+            .with_for_update()
+        ).all()
+
+        wallets_by_user = {wallet.user_id: wallet for wallet in wallets}
+
+        sender_wallet = wallets_by_user.get(current_user.id)
+        recipient_wallet = wallets_by_user.get(recipient.id)
+
+        if sender_wallet is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ton portefeuille est introuvable.",
+            )
+
+        if recipient_wallet is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Le destinataire n'a pas de portefeuille.",
+            )
+
+        # 3. Vérifier la devise et le solde
+        if sender_wallet.currency != recipient_wallet.currency:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Les deux portefeuilles doivent utiliser la même devise.",
+            )
+
+        if sender_wallet.balance < data.amount:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Solde insuffisant pour effectuer ce transfert.",
+            )
+
+        # 4. Débiter l'expéditeur et créditer le destinataire
+        sender_wallet.balance -= data.amount
+        recipient_wallet.balance += data.amount
+
+        # 5. Enregistrer les deux opérations
+        db.add_all([
+            WalletTransaction(
+                wallet_id=sender_wallet.id,
+                type="TRANSFER_OUT",
+                amount=data.amount,
+                balance_after=sender_wallet.balance,
+                description=(
+                    f"Transfert envoyé au numéro {recipient.phone}"
+                ),
+            ),
+            WalletTransaction(
+                wallet_id=recipient_wallet.id,
+                type="TRANSFER_IN",
+                amount=data.amount,
+                balance_after=recipient_wallet.balance,
+                description=(
+                    f"Transfert reçu du numéro {current_user.phone}"
+                ),
+            ),
+        ])
+
+        # Les deux soldes et les transactions sont validés ensemble.
+        db.commit()
+        db.refresh(sender_wallet)
+
+        return {
+            "message": "Transfert effectué avec succès.",
+            "recipient_phone": recipient.phone,
+            "amount": data.amount,
+            "balance": sender_wallet.balance,
+            "currency": sender_wallet.currency,
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Erreur pendant le transfert entre utilisateurs")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Une erreur est survenue pendant le transfert.",
+        ) from exc

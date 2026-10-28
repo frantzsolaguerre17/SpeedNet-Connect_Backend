@@ -191,14 +191,17 @@ def importer_codes(
 
 
 
+
 @router.get("/admin/codes")
 def lister_tous_les_codes_wifi(
     db: DbSession,
     admin: AdminUser,
 ):
     codes = (
-        db.query(WifiCode, Plan)
+        db.query(WifiCode, Plan, Order, User)
         .join(Plan, WifiCode.plan_id == Plan.id)
+        .outerjoin(Order, Order.wifi_code_id == WifiCode.id)
+        .outerjoin(User, User.id == Order.user_id)
         .order_by(WifiCode.id.desc())
         .all()
     )
@@ -210,14 +213,40 @@ def lister_tous_les_codes_wifi(
             "status": code.status,
             "plan_id": code.plan_id,
             "plan_name": plan.name,
+
+            # Date de vente si vendu, sinon date d'importation
             "created_at": (
                 code.imported_at.isoformat()
                 if code.imported_at
                 else None
             ),
+            "sold_at": (
+                commande.created_at.isoformat()
+                if commande and commande.status == "completed"
+                else (
+                    code.sold_at.isoformat()
+                    if code.sold_at
+                    else None
+                )
+            ),
+            "buyer_name": (
+                utilisateur.full_name
+                if commande
+                and commande.status == "completed"
+                and utilisateur
+                else None
+            ),
+            "buyer_phone": (
+                utilisateur.phone
+                if commande
+                and commande.status == "completed"
+                and utilisateur
+                else None
+            ),
         }
-        for code, plan in codes
+        for code, plan, commande, utilisateur in codes
     ]
+
 
 
 
