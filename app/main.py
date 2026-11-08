@@ -15,12 +15,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
-        "https://TON-FRONTEND.ethiodeploy.app",
+        "https://speed-net-connect-frontend-git-main-yankee-mackens-projects.vercel.app",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 app.include_router(user_router)
 app.include_router(wifi_router)
